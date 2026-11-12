@@ -1,0 +1,29 @@
+# Python / uv
+.venv/
+__pycache__/
+*.pyc
+
+# dbt
+transform/target/
+transform/dbt_packages/
+transform/logs/
+logs/
+
+# DuckDB / local data
+*.duckdb
+*.duckdb.wal
+data/
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+.dlt/secrets.toml
+*.p8
+*.pem
+
+# Airflow (local)
+airflow-logs/
+
+# macOS
+.DS_Store

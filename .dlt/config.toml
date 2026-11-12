@@ -1,0 +1,4 @@
+# dlt configuration (no secrets — those go to .dlt/secrets.toml, which is gitignored)
+[runtime]
+dlthub_telemetry = false
+log_level = "WARNING"

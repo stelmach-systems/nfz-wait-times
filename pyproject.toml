@@ -1,0 +1,10 @@
+[project]
+name = "nfz-wait-times"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "dbt-core>=1.12,<1.13",
+    "dbt-duckdb>=1.11,<1.12",
+    "dlt[duckdb,motherduck]>=1.32,<1.33",
+    "duckdb>=1.4,<1.6",
+]

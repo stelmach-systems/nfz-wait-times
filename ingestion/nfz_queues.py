@@ -3,10 +3,14 @@
 Reads every queue in pomorskie for both cases, strips personal data before
 anything leaves the generator (ADR-02) and stores one snapshot per day.
 
-    uv run python ingestion/nfz_queues.py
+    uv run python ingestion/nfz_queues.py                    # local DuckDB (dbt target dev)
+    uv run python ingestion/nfz_queues.py --target prod      # MotherDuck, token from MOTHERDUCK_TOKEN
+    uv run python ingestion/nfz_queues.py --skip-if-loaded   # scheduled runs: keep a day already loaded
 """
 
+import argparse
 import logging
+import os
 import re
 import time
 from collections.abc import Iterator
@@ -16,6 +20,7 @@ from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
 
 import dlt
+import duckdb
 from dlt.sources.helpers.rest_client import RESTClient
 from dlt.sources.helpers.rest_client.paginators import JSONLinkPaginator
 
@@ -31,6 +36,7 @@ SECONDS_BETWEEN_REQUESTS = 1.0  # be polite: at most one request per second
 
 # --- Destination ------------------------------------------------------------
 DUCKDB_PATH = Path(__file__).resolve().parents[1] / "data" / "nfz.duckdb"  # same file as dbt target `dev`
+MOTHERDUCK_DATABASE = os.environ.get("MOTHERDUCK_DATABASE") or "nfz_wait_times"  # same default as dbt target `prod`
 DATASET = "raw_nfz"
 TIMEZONE = ZoneInfo("Europe/Warsaw")  # the snapshot day is a Polish calendar day, also on UTC CI runners
 
@@ -152,18 +158,67 @@ def queues(snapshot_date: date) -> Iterator[list[dict]]:
             yield [record | {"snapshot_date": snapshot_date} for record in records]
 
 
-def run(snapshot_date: date | None = None) -> None:
+def destination(target: str):
+    if target == "prod":
+        token = os.environ.get("MOTHERDUCK_TOKEN") or os.environ.get("motherduck_token")
+        # Fail before the ~7-minute extract, not at load time.
+        if not token:
+            raise SystemExit("MOTHERDUCK_TOKEN is not set")
+        # The token comes from the environment only and is handed to dlt in memory (never a file or a URL here).
+        return dlt.destinations.motherduck(credentials={"database": MOTHERDUCK_DATABASE, "password": token})
+    return dlt.destinations.duckdb(str(DUCKDB_PATH))
+
+
+def already_loaded(snapshot_date: date, attempts: int = 3, wait_seconds: int = 60) -> bool:
+    """True when the local DuckDB already holds this day (used by the scheduled local runs).
+
+    DuckDB allows one writing process per file. If someone holds it open (a DuckDB shell, a dbt run),
+    wait and retry; never guess False, because that would start a second writer.
+    """
+    if not DUCKDB_PATH.exists():
+        return False
+    for attempt in range(1, attempts + 1):
+        try:
+            with duckdb.connect(str(DUCKDB_PATH), read_only=True) as con:
+                exists = con.sql(
+                    "select count(*) from information_schema.tables where table_schema = ? and table_name = 'queues'",
+                    params=[DATASET],
+                ).fetchone()[0]
+                if not exists:
+                    return False
+                sql = f"select count(*) from {DATASET}.queues where snapshot_date = ?"
+                return con.sql(sql, params=[snapshot_date]).fetchone()[0] > 0
+        except duckdb.IOException as error:
+            if attempt == attempts:
+                raise SystemExit(f"{DUCKDB_PATH} is locked by another process: {error}")
+            log.warning("DuckDB file locked, retrying in %s s (%s/%s)", wait_seconds, attempt, attempts)
+            time.sleep(wait_seconds)
+    return False
+
+
+def run(snapshot_date: date | None = None, target: str = "dev", skip_if_loaded: bool = False) -> None:
     snapshot_date = snapshot_date or datetime.now(TIMEZONE).date()
+    if skip_if_loaded:
+        if target != "dev":
+            raise SystemExit("--skip-if-loaded checks the local DuckDB only (target dev)")
+        if already_loaded(snapshot_date):
+            print(f"snapshot_date={snapshot_date} already loaded, skipping")
+            return
     pipeline = dlt.pipeline(
-        pipeline_name="nfz_queues",
-        destination=dlt.destinations.duckdb(str(DUCKDB_PATH)),
+        # Separate local state per destination, so dev and prod runs never share a working directory.
+        pipeline_name="nfz_queues" if target == "dev" else "nfz_queues_motherduck",
+        destination=destination(target),
         dataset_name=DATASET,
     )
     load_info = pipeline.run(queues(snapshot_date))
-    print(f"snapshot_date={snapshot_date}")
+    print(f"snapshot_date={snapshot_date} target={target}")
     print(load_info)
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--target", choices=("dev", "prod"), default="dev")
+    parser.add_argument("--skip-if-loaded", action="store_true")
+    args = parser.parse_args()
     logging.basicConfig(level=logging.WARNING)
-    run()
+    run(target=args.target, skip_if_loaded=args.skip_if_loaded)

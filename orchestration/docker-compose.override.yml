@@ -1,0 +1,12 @@
+# Mounts the pipeline code into the scheduler container (where tasks run) instead of copying it,
+# so the DAG always runs the code from the repo. Code is read-only; only the data directory is writable.
+# The host .venv is never mounted: the container uses its own /usr/local/airflow/nfz_venv.
+# Airflow writes its OWN DuckDB file (../data-airflow), never ../data: DuckDB's file lock does not cross
+# the Colima (virtiofs) mount, so a host process and a container could write one file at the same time.
+services:
+  scheduler:
+    volumes:
+      - ../ingestion:/usr/local/airflow/nfz/ingestion:ro
+      - ../transform:/usr/local/airflow/nfz/transform:ro
+      - ../.dlt/config.toml:/usr/local/airflow/nfz/.dlt/config.toml:ro  # never secrets.toml
+      - ../data-airflow:/usr/local/airflow/nfz/data

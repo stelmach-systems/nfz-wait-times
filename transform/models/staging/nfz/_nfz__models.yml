@@ -1,0 +1,84 @@
+version: 2
+
+models:
+  - name: stg_nfz__queues
+    description: >
+      NFZ queues, one row per queue (queue_id, case_type) per snapshot day. Typed and renamed;
+      `pcus` (wait forecast) parsed into a day range and an ordinal bucket (ADR-04).
+    columns:
+      - name: queue_snapshot_key
+        description: queue_id | case_type | snapshot_date
+        data_tests: [unique, not_null]
+      - name: queue_id
+        data_tests: [not_null]
+      - name: case_type
+        description: 1 = stable, 2 = urgent
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [1, 2]
+                quote: false
+      - name: snapshot_date
+        description: Polish calendar day of the API read (Europe/Warsaw)
+        data_tests: [not_null]
+      - name: benefit
+        data_tests: [not_null]
+      - name: registry_letter
+        description: W = healthcare entity, L = individual practice; NULL when the registry number had no letter
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["W", "L"]
+      - name: pcus_status
+        description: >
+          forecast = parsed day range · not_applicable = API says the forecast does not apply ("-") ·
+          no_data = the provider sent no dates at all. Any new format fails this test instead of
+          silently becoming NULL.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["forecast", "not_applicable", "no_data"]
+      - name: pcus_days_min
+        description: Lower bound of the forecast in days (month = 28 days)
+      - name: pcus_days_max
+        description: Upper bound in days (month = 31 days, plus up to 6 truncated days when no day count is shown)
+      - name: pcus_bucket_order
+        description: >
+          0 = 0 dni, 1 = do tygodnia, 2 = do miesiąca, 3 = 1–3 mies., 4 = 3–6 mies., 5 = ponad 6 mies.
+          Assigned by the LOWER bound (pcus_days_min), so "1 mies." (28 days) is "do miesiąca".
+      - name: pcus_bucket
+        description: Label of pcus_bucket_order
+
+unit_tests:
+  - name: test_pcus_parsing
+    description: Every pcus format seen in the API, plus the two non-forecast states.
+    model: stg_nfz__queues
+    given:
+      - input: source('raw_nfz', 'queues')
+        rows:
+          - {id: a, case: 1, snapshot_date: 2026-11-12, dates__applicable: true, dates__pcus: "0 dni"}
+          - {id: b, case: 1, snapshot_date: 2026-11-12, dates__applicable: true, dates__pcus: "1 dzień"}
+          - {id: c, case: 1, snapshot_date: 2026-11-12, dates__applicable: true, dates__pcus: "12 dni"}
+          - {id: d, case: 1, snapshot_date: 2026-11-12, dates__applicable: true, dates__pcus: "2 mies."}
+          - {id: e, case: 1, snapshot_date: 2026-11-12, dates__applicable: true, dates__pcus: "3 mies. 1 tydz."}
+          - {id: f, case: 1, snapshot_date: 2026-11-12, dates__applicable: true, dates__pcus: "7 mies. 2 tyg."}
+          - {id: g, case: 1, snapshot_date: 2026-11-12, dates__applicable: false, dates__pcus: "-"}
+          - {id: h, case: 1, snapshot_date: 2026-11-12, dates__applicable: null, dates__pcus: null}
+          - {id: i, case: 1, snapshot_date: 2026-11-12, dates__applicable: true, dates__pcus: "około roku"}
+          - {id: j, case: 1, snapshot_date: 2026-11-12, dates__applicable: true, dates__pcus: "  "}
+          - {id: k, case: 1, snapshot_date: 2026-11-12, dates__applicable: true, dates__pcus: "2 tyg."}
+    expect:
+      rows:
+        - {queue_id: a, pcus_status: forecast, pcus_days_min: 0, pcus_days_max: 0, pcus_bucket_order: 0}
+        - {queue_id: b, pcus_status: forecast, pcus_days_min: 1, pcus_days_max: 1, pcus_bucket_order: 1}
+        - {queue_id: c, pcus_status: forecast, pcus_days_min: 12, pcus_days_max: 12, pcus_bucket_order: 2}
+        - {queue_id: d, pcus_status: forecast, pcus_days_min: 56, pcus_days_max: 68, pcus_bucket_order: 3}
+        - {queue_id: e, pcus_status: forecast, pcus_days_min: 91, pcus_days_max: 106, pcus_bucket_order: 4}
+        - {queue_id: f, pcus_status: forecast, pcus_days_min: 210, pcus_days_max: 237, pcus_bucket_order: 5}
+        - {queue_id: g, pcus_status: not_applicable, pcus_days_min: null, pcus_days_max: null, pcus_bucket_order: null}
+        - {queue_id: h, pcus_status: no_data, pcus_days_min: null, pcus_days_max: null, pcus_bucket_order: null}
+        - {queue_id: i, pcus_status: unexpected, pcus_days_min: null, pcus_days_max: null, pcus_bucket_order: null}
+        - {queue_id: j, pcus_status: unexpected, pcus_days_min: null, pcus_days_max: null, pcus_bucket_order: null}
+        - {queue_id: k, pcus_status: forecast, pcus_days_min: 14, pcus_days_max: 20, pcus_bucket_order: 2}

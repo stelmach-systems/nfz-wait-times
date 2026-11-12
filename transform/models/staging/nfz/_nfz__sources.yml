@@ -1,0 +1,17 @@
+version: 2
+
+sources:
+  - name: raw_nfz
+    description: >
+      NFZ "Terminy Leczenia" API v1.4 loaded by ingestion/nfz_queues.py (dlt).
+      Personal data is stripped before load (ADR-02). The database is the target's
+      own (local DuckDB on dev, MotherDuck on prod), so it is not set here.
+    schema: raw_nfz
+    loaded_at_field: "cast(snapshot_date as timestamp)"
+    freshness:
+      # snapshot_date is a day, read as midnight: one missed day warns, three missed days fail.
+      warn_after: {count: 2, period: day}
+      error_after: {count: 4, period: day}
+    tables:
+      - name: queues
+        description: One row per queue (id, case) per snapshot day; a rerun on the same day replaces that day.

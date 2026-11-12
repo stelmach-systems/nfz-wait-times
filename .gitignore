@@ -13,6 +13,7 @@ logs/
 *.duckdb
 *.duckdb.wal
 data/
+data-airflow/
 
 # Secrets — never commit
 .env
